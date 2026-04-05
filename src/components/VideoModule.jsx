@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
+import { motion } from 'framer-motion'
 
-export default function VideoModule({ videoSrc, videoRef }) {
+export default function VideoModule({ videoSrc, videoRef, mixerOpen = false, deckVisible = false }) {
   const [videoError, setVideoError] = useState(null)
 
   useEffect(() => {
@@ -26,6 +27,11 @@ export default function VideoModule({ videoSrc, videoRef }) {
         playsInline
         preload="auto"
         onError={handleError}
+      />
+      <motion.div
+        style={styles.deckSurface}
+        animate={{ height: mixerOpen ? '75vh' : '60vh', opacity: deckVisible ? 1 : 0 }}
+        transition={{ type: 'spring', stiffness: 380, damping: 36, opacity: { duration: deckVisible ? 0 : 0.4, ease: 'easeOut' } }}
       />
       {videoError && (
         <div style={styles.errorOverlay}>
@@ -53,6 +59,19 @@ const styles = {
     height: '100%',
     objectFit: 'cover',
     display: 'block',
+  },
+  deckSurface: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    background: 'rgba(255,255,255,0.15)',
+    backdropFilter: 'blur(20px)',
+    WebkitBackdropFilter: 'blur(20px)',
+    WebkitMaskImage: 'linear-gradient(to bottom, transparent, black)',
+    maskImage: 'linear-gradient(to bottom, transparent, black)',
+    pointerEvents: 'none',
+    zIndex: 2,
   },
   errorOverlay: {
     position: 'absolute',

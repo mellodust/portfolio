@@ -1,262 +1,458 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
-import { motion, useMotionValue, animate } from 'framer-motion'
+import { useRef, useState, useLayoutEffect, useEffect } from 'react'
+import { motion, useMotionValue, useVelocity, useMotionValueEvent, animate, AnimatePresence } from 'framer-motion'
 import { audioEngine } from '../audio/audioEngine'
 
-const CARD_GAP = 24
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
-function getCardWidth() {
-  return Math.min(280, window.innerWidth * 0.72)
+function computeCardWidth() {
+  return Math.min(360, Math.max(200, window.innerWidth * 0.22))
 }
 
-// X position of the track so that card at `index` is centered in the viewport
-function getTrackX(index, cardWidth) {
-  return (window.innerWidth - cardWidth) / 2 - index * (cardWidth + CARD_GAP)
+function parseAspectRatio(str) {
+  const [w, h] = (str || '4:3').split(':').map(Number)
+  return w / h
 }
 
 // ---------------------------------------------------------------------------
-// VideoThumbnail — loops between thumbnailIn and thumbnailOut seconds
+// Parallax constants
 // ---------------------------------------------------------------------------
 
-function VideoThumbnail({ videoUrl, thumbnailIn, thumbnailOut }) {
-  const ref = useRef(null)
+// Parallax offset expressed as a fraction of viewport width.
+// Decoupled from card dimensions so changing card aspect ratio never alters parallax feel.
+const PARALLAX_SHIFT_VW = 0.03
+// OVERSCAN is computed per-render in PortfolioGrid because it depends on the ratio of
+// viewport width to card width, both of which change at runtime.
+
+// ---------------------------------------------------------------------------
+// VideoThumbnail
+// ---------------------------------------------------------------------------
+
+function VideoThumbnail({ videoUrl, thumbnailClips }) {
+  const ref     = useRef(null)
+  const clipIdx = useRef(0)
 
   useEffect(() => {
     const video = ref.current
-    if (!video) return
-    const seek = () => { video.currentTime = thumbnailIn }
-    const loop = () => { if (video.currentTime >= thumbnailOut) seek() }
+    if (!video || !thumbnailClips?.length) return
+
+    const seek = () => {
+      clipIdx.current = 0
+      const clip = thumbnailClips[0]
+      video.currentTime          = clip.in
+      video.style.objectPosition = clip.position ?? 'center center'
+    }
+
+    const onTimeUpdate = () => {
+      const clip = thumbnailClips[clipIdx.current]
+      if (video.currentTime >= clip.out) {
+        // Advance the index ref before seeking — this is the guard.
+        // Any timeupdate events that fire before the seek settles will check
+        // the new clip's out point, not the old one, preventing double-firing.
+        const prevIdx = clipIdx.current
+        clipIdx.current = (clipIdx.current + 1) % thumbnailClips.length
+        const next = thumbnailClips[clipIdx.current]
+
+        video.currentTime = next.in
+
+        // objectPosition only changes when the clip index actually advances.
+        // This is the hard cut: timecode and crop position switch simultaneously,
+        // and the position never bleeds into the wrong clip.
+        if (clipIdx.current !== prevIdx) {
+          video.style.objectPosition = next.position ?? 'center center'
+        }
+      }
+    }
+
     video.addEventListener('loadedmetadata', seek)
-    video.addEventListener('timeupdate', loop)
+    video.addEventListener('timeupdate', onTimeUpdate)
     return () => {
       video.removeEventListener('loadedmetadata', seek)
-      video.removeEventListener('timeupdate', loop)
+      video.removeEventListener('timeupdate', onTimeUpdate)
     }
-  }, [thumbnailIn, thumbnailOut])
+  }, [thumbnailClips])
 
   return (
-    <video
-      ref={ref}
-      src={videoUrl}
-      muted
-      autoPlay
-      playsInline
-      preload="auto"
-      style={styles.media}
-    />
+    <video ref={ref} src={videoUrl} muted autoPlay playsInline preload="auto" style={styles.media} />
   )
 }
 
 // ---------------------------------------------------------------------------
-// Card
+// CarouselCard — outer moves with carousel, inner parallaxes
 // ---------------------------------------------------------------------------
 
-function Card({ project, isActive }) {
+function CarouselCard({ slotIndex, project, rawPos, loadedIdRef, strideRef }) {
+  const outerRef = useRef(null)
+  const innerRef = useRef(null)
+
+  function apply(pos) {
+    const outer = outerRef.current
+    const inner = innerRef.current
+    if (!outer) return
+    const stride = strideRef.current
+    const offset = slotIndex - pos
+    const x      = offset * stride
+    const scale  = project.id === loadedIdRef.current ? 1.15 : 1.0
+    outer.style.transform = `translate(-50%, -50%) translate3d(${x}px, 0, 0) scale(${scale})`
+    if (inner) {
+      // cardPositionFromCenter = offset * stride
+      // parallaxOffset = cardPositionFromCenter * PARALLAX_SHIFT_VW  (viewportWidth cancels)
+      inner.style.transform = `translate3d(${-offset * stride * PARALLAX_SHIFT_VW}px, 0, 0)`
+    }
+  }
+
+  useMotionValueEvent(rawPos, 'change', apply)
+  useLayoutEffect(() => { apply(rawPos.get()) })
+
   return (
-    <div style={{
-      ...styles.card,
-      opacity: isActive ? 1 : 0.4,
-      transform: `scale(${isActive ? 1 : 0.92})`,
-      transition: 'opacity 0.3s ease, transform 0.3s ease',
-    }}>
-      {project.type === 'video' ? (
-        <VideoThumbnail
-          videoUrl={project.videoUrl}
-          thumbnailIn={project.thumbnailIn}
-          thumbnailOut={project.thumbnailOut}
-        />
-      ) : (
-        <img src={project.artworkUrl} style={styles.media} alt={project.title} />
-      )}
-      <div style={styles.cardLabel}>
-        <span style={styles.cardTitle}>{project.title}</span>
+    <div
+      ref={outerRef}
+      data-slot-index={slotIndex}
+      style={{
+        position: 'absolute',
+        left: '50%',
+        top: '50%',
+        // Width and height set dynamically — inline style is recalculated on resize via
+        // parent re-render (cardWidth state drives a key prop, see PortfolioGrid)
+        width: 'var(--card-w)',
+        height: 'var(--card-h)',
+        borderRadius: 16,
+        overflow: 'hidden',
+        background: '#111',
+        cursor: 'pointer',
+        willChange: 'transform',
+        userSelect: 'none',
+        WebkitUserSelect: 'none',
+        flexShrink: 0,
+      }}
+    >
+      {/* Inner media layer — OVERSCAN wide, tall enough for full vertical coverage.
+          Precisely centered so ±PARALLAX_SHIFT shift never exposes a black edge.
+          Card's overflow:hidden clips the excess. */}
+      <div
+        ref={innerRef}
+        style={{
+          position: 'absolute',
+          width: 'var(--inner-w)',
+          height: 'var(--inner-h)',
+          left: 'var(--inner-left)',
+          top: 'var(--inner-top)',
+          willChange: 'transform',
+        }}
+      >
+        {project.type === 'video' ? (
+          <VideoThumbnail
+            videoUrl={project.videoUrl}
+            thumbnailClips={project.thumbnailClips}
+          />
+        ) : (
+          <div style={styles.placeholder} />
+        )}
       </div>
     </div>
   )
 }
 
 // ---------------------------------------------------------------------------
-// PortfolioGrid
+// Title variants
 // ---------------------------------------------------------------------------
 
-export default function PortfolioGrid({ projects, videoRef, onProjectLoad }) {
-  // Wrap items with clones for seamless infinite loop:
-  // [lastClone, item0, item1, …, itemN, firstClone]
-  const trackItems = [
-    projects[projects.length - 1],
-    ...projects,
-    projects[0],
-  ]
+const titleVariants = {
+  initial: { scale: 0.85, opacity: 0 },
+  animate: { scale: 1, opacity: 1, transition: { type: 'spring', stiffness: 400, damping: 20 } },
+  exit:    { scale: 0.85, opacity: 0, transition: { duration: 0.1 } },
+}
 
-  const x = useMotionValue(getTrackX(1, getCardWidth()))
-  const [visualIdx, setVisualIdx] = useState(1)
-  const visualIdxRef = useRef(1)
+// ---------------------------------------------------------------------------
+// PortfolioGrid — flat infinite horizontal scroll carousel
+// ---------------------------------------------------------------------------
+
+export default function PortfolioGrid({
+  projects,
+  videoRef,
+  onProjectLoad,
+  showTitle    = true,
+  dragSensitivity = 1.0,
+  dragZoneBottom = window.innerHeight * 0.5,
+}) {
+  const L = projects.length
+
+  // Clone layout: [projects × 3]
+  //   Indices  0..L-1   → left clones   (mirrors real, enables leftward infinite scroll)
+  //   Indices  L..2L-1  → real zone     (starting position, rawPos begins here)
+  //   Indices  2L..3L-1 → right clones  (mirrors real, enables rightward infinite scroll)
+  const allCards = [...projects, ...projects, ...projects]
+
+  const containerRef = useRef(null)
+
+  const [cardWidth, setCardWidth] = useState(computeCardWidth)
+  const [loadedId, setLoadedId]   = useState(null)
+  const [centerIdx, setCenterIdx] = useState(0)
+
+  // Refs so apply() always reads the latest values without stale closures
+  const loadedIdRef      = useRef(loadedId)
+  loadedIdRef.current    = loadedId
+
+  const gap        = Math.round(cardWidth * 0.08)
+  const stride     = cardWidth + gap
+  const aspectRatio = parseAspectRatio('1:1')
+  const cardHeight  = Math.round(cardWidth / aspectRatio)
+
+  // OVERSCAN: inner must be wide enough so the maximum parallax shift never exposes a black edge.
+  // Max shift in pixels = PARALLAX_SHIFT_VW * viewportWidth (constant regardless of card ratio).
+  // Expressed relative to cardWidth to get the required fractional overscan per side.
+  const maxParallaxPx = PARALLAX_SHIFT_VW * window.innerWidth
+  const OVERSCAN      = 1 + 2 * maxParallaxPx / cardWidth
+
+  // Inner media dimensions — fully derived from OVERSCAN so no black edges at any card ratio.
+  // Height uses the larger of a 5% vertical buffer and the inner width scaled by the source
+  // video's h/w ratio, ensuring full coverage regardless of source aspect ratio.
+  const srcAspect      = projects[0]?.aspectRatio || '4:3'
+  const [sw, sh]       = srcAspect.split(':').map(Number)
+  const videoHWRatio   = sh / sw
+  const innerWidth     = Math.round(cardWidth * OVERSCAN)
+  const innerHeight    = Math.round(Math.max(cardHeight * 1.05, innerWidth * videoHWRatio))
+  const innerLeft      = -Math.round((innerWidth  - cardWidth)  / 2)
+  const innerTop       = -Math.round((innerHeight - cardHeight) / 2)
+
+  const strideRef   = useRef(stride)
+  strideRef.current = stride
+
+  // rawPos in index-space. 0 = slot 0 at center. Starts at L (first real project).
+  const rawPos   = useMotionValue(L)
+  const velMv    = useVelocity(rawPos)
   const animCtrl = useRef(null)
+  const isWrapping = useRef(false)
 
-  const dragStartX = useRef(null)
-  const dragStartY = useRef(null)
-  const dragBaseX = useRef(0)
-  const isDragging = useRef(false)
+  // ---------------------------------------------------------------------------
+  // Position tracking — wrapping + centerIdx update
+  // ---------------------------------------------------------------------------
 
-  // Snap track to a given track-space index, then handle clone jumps
-  const snapTo = useCallback((vi) => {
-    animCtrl.current?.stop()
-    const cw = getCardWidth()
+  useMotionValueEvent(rawPos, 'change', (pos) => {
+    let p = pos
 
-    animCtrl.current = animate(x, getTrackX(vi, cw), {
-      type: 'spring', stiffness: 300, damping: 30, mass: 0.8,
-    })
-
-    animCtrl.current.then(() => {
-      let finalVi = vi
-      if (vi <= 0) {
-        // Snapped to last-clone — instantly jump to real last item
-        finalVi = trackItems.length - 2
-        x.set(getTrackX(finalVi, cw))
-      } else if (vi >= trackItems.length - 1) {
-        // Snapped to first-clone — instantly jump to real first item
-        finalVi = 1
-        x.set(getTrackX(finalVi, cw))
+    if (!isWrapping.current) {
+      if (pos < L) {
+        // Entered left clone zone — silently jump to equivalent real position
+        isWrapping.current = true
+        const vel = velMv.get()
+        animCtrl.current?.stop()
+        p = pos + L
+        rawPos.set(p)
+        if (Math.abs(vel) > 1) {
+          animCtrl.current = animate(rawPos, p, {
+            type: 'inertia', velocity: vel, power: 0.3, timeConstant: 500,
+          })
+        }
+        Promise.resolve().then(() => { isWrapping.current = false })
+      } else if (pos >= 2 * L) {
+        // Entered right clone zone — silently jump to equivalent real position
+        isWrapping.current = true
+        const vel = velMv.get()
+        animCtrl.current?.stop()
+        p = pos - L
+        rawPos.set(p)
+        if (Math.abs(vel) > 1) {
+          animCtrl.current = animate(rawPos, p, {
+            type: 'inertia', velocity: vel, power: 0.3, timeConstant: 500,
+          })
+        }
+        Promise.resolve().then(() => { isWrapping.current = false })
       }
-      visualIdxRef.current = finalVi
-      setVisualIdx(finalVi)
-    })
-  }, [trackItems.length, x])
-
-  // Arrow key navigation
-  useEffect(() => {
-    function onKeyDown(e) {
-      if (e.key === 'ArrowLeft') snapTo(visualIdxRef.current - 1)
-      else if (e.key === 'ArrowRight') snapTo(visualIdxRef.current + 1)
     }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [snapTo])
 
-  // Reposition on resize without animation
+    // Always update centered project (clamp to real zone for index computation)
+    const nearestSlot = Math.max(L, Math.min(2 * L - 1, Math.round(p)))
+    const projIdx     = nearestSlot - L
+    setCenterIdx(prev => prev !== projIdx ? projIdx : prev)
+  })
+
+  // ---------------------------------------------------------------------------
+  // Resize
+  // ---------------------------------------------------------------------------
+
   useEffect(() => {
-    function onResize() {
-      x.set(getTrackX(visualIdxRef.current, getCardWidth()))
-    }
+    function onResize() { setCardWidth(computeCardWidth()) }
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
-  }, [x])
+  }, [])
 
-  // Pointer / touch drag
+  // ---------------------------------------------------------------------------
+  // Wheel / trackpad
+  // ---------------------------------------------------------------------------
+
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    function onWheel(e) {
+      e.preventDefault()
+      animCtrl.current?.stop()
+      const delta = Math.abs(e.deltaX) > Math.abs(e.deltaY) * 0.5
+        ? e.deltaX
+        : e.deltaY * 0.3
+      rawPos.set(rawPos.get() + delta / strideRef.current)
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [rawPos])
+
+  // ---------------------------------------------------------------------------
+  // Pointer / drag
+  // ---------------------------------------------------------------------------
+
+  const dragStart = useRef(null)
+  const didDrag   = useRef(false)
+  const isLoading = useRef(false)
+
   function onPointerDown(e) {
+    if (e.clientY >= dragZoneBottom) return
     animCtrl.current?.stop()
-    dragStartX.current = e.clientX
-    dragStartY.current = e.clientY
-    dragBaseX.current = x.get()
-    isDragging.current = false
+    didDrag.current   = false
+    dragStart.current = { x: e.clientX, y: e.clientY, pos: rawPos.get() }
   }
 
   function onPointerMove(e) {
-    if (dragStartX.current === null) return
-    const dx = e.clientX - dragStartX.current
-    const dy = e.clientY - dragStartY.current
+    if (!dragStart.current) return
+    const dx = e.clientX - dragStart.current.x
+    const dy = e.clientY - dragStart.current.y
 
-    if (!isDragging.current) {
-      // Wait for minimum movement before committing to a direction
+    if (!didDrag.current) {
       if (Math.abs(dx) < 4 && Math.abs(dy) < 4) return
-      // If more vertical than horizontal, let the page scroller handle it
-      if (Math.abs(dy) >= Math.abs(dx)) { dragStartX.current = null; return }
-      isDragging.current = true
+      if (Math.abs(dy) > Math.abs(dx)) { dragStart.current = null; return }
+      didDrag.current = true
       e.currentTarget.setPointerCapture(e.pointerId)
     }
 
-    x.set(dragBaseX.current + dx)
+    rawPos.set(dragStart.current.pos - dx * dragSensitivity / strideRef.current)
   }
 
-  function onPointerUp(e) {
-    if (dragStartX.current === null) return
-    const dx = e.clientX - dragStartX.current
-    const wasDrag = isDragging.current
-    dragStartX.current = null
-    isDragging.current = false
+  function onPointerUp() {
+    if (!dragStart.current) return
+    dragStart.current = null
+    if (!didDrag.current) return
 
-    if (!wasDrag) {
-      // Tap — load the currently centered project
-      handleCardTap(projects[visualIdxRef.current - 1])
-      return
-    }
-
-    const cw = getCardWidth()
-    const vi = visualIdxRef.current
-    if (dx < -(cw / 4)) snapTo(vi + 1)
-    else if (dx > (cw / 4)) snapTo(vi - 1)
-    else snapTo(vi)
+    // Velocity-based inertia, no snapping, no min/max — free spin
+    const vel = velMv.get()
+    animCtrl.current = animate(rawPos, rawPos.get(), {
+      type: 'inertia',
+      velocity: vel,
+      power: 0.3,
+      timeConstant: 500,
+    })
   }
 
   function onPointerCancel() {
-    dragStartX.current = null
-    isDragging.current = false
-    snapTo(visualIdxRef.current)
+    dragStart.current = null
   }
 
-  async function handleCardTap(project) {
+  // Tap detection via event delegation — reads data-slot-index
+  function onClick(e) {
+    if (didDrag.current) return
+    const cardEl = e.target.closest('[data-slot-index]')
+    if (!cardEl) return
+    handleTap(parseInt(cardEl.dataset.slotIndex, 10))
+  }
+
+  // ---------------------------------------------------------------------------
+  // Tap → snap to center + load project
+  // ---------------------------------------------------------------------------
+
+  async function handleTap(slotIndex) {
+    if (isLoading.current) return
+    const projIdx = slotIndex % L                    // 0..L-1
+    const target  = projIdx + L                      // snap to real zone equivalent
+    const project = projects[projIdx]
     if (!project) return
-    audioEngine.pause()
+
+    animCtrl.current?.stop()
+    animCtrl.current = animate(rawPos, target, {
+      type: 'spring', stiffness: 300, damping: 35, mass: 0.8,
+    })
+
+    isLoading.current = true
+    onProjectLoad?.()
     try {
+      audioEngine.pause()
       await Promise.all(project.stems.map(s => audioEngine.loadStem(s.id, s.url)))
       if (videoRef?.current) audioEngine.setMode('video', videoRef.current)
-      onProjectLoad?.()
+      setLoadedId(project.id)
       audioEngine.play()
     } catch (err) {
-      console.error('[PortfolioGrid] Failed to load project stems:', err)
+      console.error('[PortfolioGrid] stem load error:', err)
+    } finally {
+      isLoading.current = false
     }
   }
 
-  const cw = getCardWidth()
+  const activeProject = projects[centerIdx]
+
+  // CSS custom properties drive all dimensions — avoids prop-drilling into each card's style
+  const cssVars = {
+    '--card-w':    `${cardWidth}px`,
+    '--card-h':    `${cardHeight}px`,
+    '--inner-w':   `${innerWidth}px`,
+    '--inner-h':   `${innerHeight}px`,
+    '--inner-left':`${innerLeft}px`,
+    '--inner-top': `${innerTop}px`,
+  }
 
   return (
-    <div style={styles.container}>
-      <motion.div
-        style={{ ...styles.track, x }}
+    <>
+      <div
+        ref={containerRef}
+        style={{ ...styles.container, ...cssVars }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerCancel}
+        onClick={onClick}
       >
-        {trackItems.map((project, i) => (
-          <div key={`${project.id}-${i}`} style={{ width: cw, flexShrink: 0 }}>
-            <Card project={project} isActive={i === visualIdx} />
-          </div>
+        {allCards.map((project, slotIndex) => (
+          <CarouselCard
+            key={slotIndex}
+            slotIndex={slotIndex}
+            project={project}
+            rawPos={rawPos}
+            loadedIdRef={loadedIdRef}
+            strideRef={strideRef}
+          />
         ))}
-      </motion.div>
-    </div>
+      </div>
+
+      {showTitle && (
+        <div style={styles.titleDisplay}>
+          <AnimatePresence mode="wait" initial={false}>
+            <motion.span
+              key={activeProject?.id}
+              style={styles.titleText}
+              variants={titleVariants}
+              initial="initial"
+              animate="animate"
+              exit="exit"
+            >
+              {activeProject?.title}
+            </motion.span>
+          </AnimatePresence>
+        </div>
+      )}
+    </>
   )
 }
 
+// ---------------------------------------------------------------------------
+// Styles
+// ---------------------------------------------------------------------------
+
 const styles = {
   container: {
-    position: 'relative',
-    width: '100%',
-    height: '100%',
-    overflow: 'hidden',
-    // Allow vertical page scroll to pass through; horizontal is ours
-    touchAction: 'pan-y',
-  },
-  track: {
     position: 'absolute',
-    top: 0,
-    left: 0,
-    height: '100%',
-    display: 'flex',
-    alignItems: 'center',
-    gap: `${CARD_GAP}px`,
-    width: 'max-content',
-    willChange: 'transform',
-    cursor: 'grab',
-    userSelect: 'none',
-  },
-  card: {
-    height: '70vh',
-    borderRadius: '24px',
+    inset: 0,
     overflow: 'hidden',
-    background: '#111',
-    position: 'relative',
-    cursor: 'pointer',
-    willChange: 'transform, opacity',
+    touchAction: 'pan-y',
+    userSelect: 'none',
+    WebkitUserSelect: 'none',
+    cursor: 'grab',
   },
   media: {
     width: '100%',
@@ -264,20 +460,27 @@ const styles = {
     objectFit: 'cover',
     display: 'block',
     pointerEvents: 'none',
+    userSelect: 'none',
   },
-  cardLabel: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    padding: '48px 20px 20px',
-    background: 'linear-gradient(transparent, rgba(0,0,0,0.75))',
+  placeholder: {
+    width: '100%',
+    height: '100%',
+    background: '#1a1a1a',
   },
-  cardTitle: {
-    color: 'rgba(255,255,255,0.9)',
-    fontSize: '15px',
+  titleDisplay: {
+    position: 'fixed',
+    bottom: 'calc(96px + env(safe-area-inset-bottom))',
+    left: 'calc(24px + env(safe-area-inset-left))',
+    pointerEvents: 'none',
+    zIndex: 999,
+  },
+  titleText: {
+    display: 'block',
+    color: 'rgba(255,255,255,0.75)',
+    fontSize: '13px',
     fontFamily: 'system-ui, sans-serif',
     fontWeight: 500,
-    letterSpacing: '0.03em',
+    letterSpacing: '0.08em',
+    textTransform: 'uppercase',
   },
 }

@@ -47,6 +47,13 @@ class AudioEngine {
     this._prevTickPos = 0;
     this._rafId = null;
 
+    // Seek de-click
+    this._seekTimer = null;
+    this._targetVolume = 1;
+
+    // Scrub state (pointer-drag on waveform)
+    this._scrubWasPlaying = false;
+
     // Event listeners: Map<event, Set<fn>>
     this._listenerMap = new Map();
   }
@@ -135,6 +142,17 @@ class AudioEngine {
   pause() {
     if (!this._isPlaying) return;
 
+    // Cancel any in-flight seek ramp
+    if (this._seekTimer !== null) {
+      clearTimeout(this._seekTimer);
+      this._seekTimer = null;
+    }
+    // Restore gain in case a seek ramp-down was interrupted
+    if (this._masterGain) {
+      this._masterGain.gain.cancelScheduledValues(this._ctx.currentTime);
+      this._masterGain.gain.setValueAtTime(this._targetVolume, this._ctx.currentTime);
+    }
+
     // Snapshot position before stopping
     this._startOffset = this.currentTime;
     this._stopAllSources();
@@ -155,31 +173,115 @@ class AudioEngine {
 
   /**
    * Move the playhead to `time` seconds.
-   * If playing, seamlessly restarts all stems from the new position.
+   * Ramps master gain to 0 over ~10ms, performs the seek, then ramps back up.
+   * Eliminates clicks and pops during scrubbing.
    */
   seek(time) {
     const clampedTime = Math.max(0, Math.min(time, this._duration));
     const wasPlaying = this._isPlaying;
 
-    if (wasPlaying) {
+    // Cancel any in-flight seek so fast scrubbing doesn't stack timers
+    if (this._seekTimer !== null) {
+      clearTimeout(this._seekTimer);
+      this._seekTimer = null;
+    }
+
+    // Ramp master gain to silence
+    if (this._masterGain && this._ctx) {
+      this._masterGain.gain.cancelScheduledValues(this._ctx.currentTime);
+      this._masterGain.gain.setValueAtTime(this._masterGain.gain.value, this._ctx.currentTime);
+      this._masterGain.gain.setTargetAtTime(0, this._ctx.currentTime, 0.003);
+    }
+
+    // Update spin direction for UI
+    const delta = clampedTime - this._startOffset;
+    this._spinState.direction = delta >= 0 ? 1 : -1;
+    this._spinState.scrubVelocity = 0;
+
+    // Emit immediately for responsive waveform scrubbing
+    this._startOffset = clampedTime;
+    this._emit('stateChange', this._buildState());
+
+    // After gain has faded (~10ms), perform the actual source restart
+    this._seekTimer = setTimeout(() => {
+      this._seekTimer = null;
+
+      if (wasPlaying) {
+        this._stopAllSources();
+        this._isPlaying = false;
+        this._stopRaf();
+      }
+
+      if (wasPlaying) {
+        this.play();
+      } else {
+        this._syncVideo();
+      }
+
+      // Ramp gain back up
+      if (this._masterGain && this._ctx) {
+        this._masterGain.gain.cancelScheduledValues(this._ctx.currentTime);
+        this._masterGain.gain.setValueAtTime(this._masterGain.gain.value, this._ctx.currentTime);
+        this._masterGain.gain.setTargetAtTime(this._targetVolume, this._ctx.currentTime, 0.003);
+      }
+    }, 12);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Scrub API — for pointer-drag on waveform canvas
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Call once on pointerdown. Ramps gain to silence and stops sources.
+   */
+  beginScrub() {
+    if (!this._ctx) return;
+    this._scrubWasPlaying = this._isPlaying;
+    // Ramp master gain to silence
+    this._masterGain.gain.cancelScheduledValues(this._ctx.currentTime);
+    this._masterGain.gain.setValueAtTime(this._masterGain.gain.value, this._ctx.currentTime);
+    this._masterGain.gain.setTargetAtTime(0, this._ctx.currentTime, 0.003);
+    // Stop sources immediately
+    if (this._isPlaying) {
       this._stopAllSources();
       this._isPlaying = false;
       this._stopRaf();
     }
+  }
 
-    // Compute velocity for spin state (negative = scrubbing backward)
+  /**
+   * Call on every pointermove. Updates position silently — no gain changes.
+   * Seeks the video element in real time so the frame tracks the drag position.
+   */
+  scrubTo(time) {
+    if (!this._ctx) return;
+    const clampedTime = Math.max(0, Math.min(time, this._duration));
     const delta = clampedTime - this._startOffset;
     this._spinState.direction = delta >= 0 ? 1 : -1;
-    this._spinState.scrubVelocity = 0; // reset; RAF will recompute
-
+    this._spinState.scrubVelocity = 0;
     this._startOffset = clampedTime;
+    if (this._mode === 'video' && this._videoEl) {
+      this._videoEl.currentTime = clampedTime;
+    }
+    this._emit('stateChange', this._buildState());
+  }
 
-    if (wasPlaying) {
-      this.play();
+  /**
+   * Call once on pointerup/cancel. Restarts playback if needed and ramps gain back.
+   */
+  endScrub() {
+    if (!this._ctx) return;
+    if (this._scrubWasPlaying) {
+      this.play(); // sources restart at _startOffset with gain still at ~0
     } else {
       this._syncVideo();
       this._emit('stateChange', this._buildState());
     }
+    // Ramp gain back to full
+    this._masterGain.gain.cancelScheduledValues(this._ctx.currentTime);
+    this._masterGain.gain.setValueAtTime(this._masterGain.gain.value, this._ctx.currentTime);
+    this._masterGain.gain.setTargetAtTime(this._targetVolume, this._ctx.currentTime, 0.003);
+    this._scrubWasPlaying = false;
   }
 
   // ---------------------------------------------------------------------------
@@ -220,8 +322,9 @@ class AudioEngine {
   /** @param {number} value  0–1 */
   setMasterVolume(value) {
     if (!this._masterGain) return;
+    this._targetVolume = Math.max(0, Math.min(1, value));
     this._masterGain.gain.setTargetAtTime(
-      Math.max(0, Math.min(1, value)),
+      this._targetVolume,
       this._ctx.currentTime,
       0.015
     );

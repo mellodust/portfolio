@@ -1,0 +1,18 @@
+<svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g clip-path="url(#clip0_30_14)">
+<path d="M8 14C6.89543 14 6 13.1046 6 12C6 10.8954 6.89543 10 8 10H11C12.1046 10 13 10.8954 13 12C13 13.1046 12.1046 14 11 14H8Z" fill="white"/>
+<path d="M21 14C19.8954 14 19 13.1046 19 12C19 10.8954 19.8954 10 21 10H40C41.1046 10 42 10.8954 42 12C42 13.1046 41.1046 14 40 14H21Z" fill="white"/>
+<path d="M8 26C6.89543 26 6 25.1046 6 24C6 22.8954 6.89543 22 8 22H25C26.1046 22 27 22.8954 27 24C27 25.1046 26.1046 26 25 26H8Z" fill="white"/>
+<path d="M35 26C33.8954 26 33 25.1046 33 24C33 22.8954 33.8954 22 35 22H40C41.1046 22 42 22.8954 42 24C42 25.1046 41.1046 26 40 26H35Z" fill="white"/>
+<path d="M8 38C6.89543 38 6 37.1046 6 36C6 34.8954 6.89543 34 8 34H11C12.1046 34 13 34.8954 13 36C13 37.1046 12.1046 38 11 38H8Z" fill="white"/>
+<path d="M21 38C19.8954 38 19 37.1046 19 36C19 34.8954 19.8954 34 21 34H40C41.1046 34 42 34.8954 42 36C42 37.1046 41.1046 38 40 38H21Z" fill="white"/>
+<circle cx="16" cy="36" r="4.5" fill="white" stroke="white" stroke-width="3"/>
+<circle cx="30" cy="24" r="4.5" fill="white" stroke="white" stroke-width="3"/>
+<circle cx="16" cy="12" r="4.5" fill="white" stroke="white" stroke-width="3"/>
+</g>
+<defs>
+<clipPath id="clip0_30_14">
+<rect width="48" height="48" fill="white" transform="matrix(0 1 1 0 0 0)"/>
+</clipPath>
+</defs>
+</svg>

@@ -1,0 +1,30 @@
+<svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g clip-path="url(#clip0_31_45)">
+<mask id="mask0_31_45" style="mask-type:alpha" maskUnits="userSpaceOnUse" x="6" y="10" width="36" height="4">
+<line x1="40" y1="12" x2="8" y2="12" stroke="white" stroke-width="4" stroke-linecap="round"/>
+</mask>
+<g mask="url(#mask0_31_45)">
+<path d="M42 9V15H6V9H42ZM13 12C13 13.6569 14.3431 15 16 15C17.6569 15 19 13.6569 19 12C19 10.3431 17.6569 9 16 9C14.3431 9 13 10.3431 13 12Z" fill="white"/>
+</g>
+<mask id="mask1_31_45" style="mask-type:alpha" maskUnits="userSpaceOnUse" x="6" y="22" width="36" height="4">
+<line x1="40" y1="24" x2="8" y2="24" stroke="white" stroke-width="4" stroke-linecap="round"/>
+</mask>
+<g mask="url(#mask1_31_45)">
+<path d="M42 21V27H6V21H42ZM27 24C27 25.6569 28.3431 27 30 27C31.6569 27 33 25.6569 33 24C33 22.3431 31.6569 21 30 21C28.3431 21 27 22.3431 27 24Z" fill="white"/>
+</g>
+<mask id="mask2_31_45" style="mask-type:alpha" maskUnits="userSpaceOnUse" x="6" y="34" width="36" height="4">
+<line x1="40" y1="36" x2="8" y2="36" stroke="white" stroke-width="4" stroke-linecap="round"/>
+</mask>
+<g mask="url(#mask2_31_45)">
+<path d="M42 33V39H6V33H42ZM13 36C13 37.6569 14.3431 39 16 39C17.6569 39 19 37.6569 19 36C19 34.3431 17.6569 33 16 33C14.3431 33 13 34.3431 13 36Z" fill="white"/>
+</g>
+<circle cx="3" cy="3" r="4.5" transform="matrix(1 0 0 -1 13 15)" stroke="white" stroke-width="3"/>
+<circle cx="3" cy="3" r="4.5" transform="matrix(1 0 0 -1 27 27)" stroke="white" stroke-width="3"/>
+<circle cx="3" cy="3" r="4.5" transform="matrix(1 0 0 -1 13 39)" stroke="white" stroke-width="3"/>
+</g>
+<defs>
+<clipPath id="clip0_31_45">
+<rect width="48" height="48" fill="white" transform="matrix(0 -1 1 0 0 48)"/>
+</clipPath>
+</defs>
+</svg>
