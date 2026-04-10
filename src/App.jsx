@@ -1,8 +1,10 @@
 import { useRef, useState, useEffect, useCallback, useLayoutEffect } from 'react'
-import { motion } from 'framer-motion'
+import { motion, AnimatePresence } from 'framer-motion'
+import { BuilderComponent, builder, useIsPreviewing } from '@builder.io/react'
 import { audioEngine } from './audio/audioEngine'
 import TransportPill from './components/TransportPill'
 import VideoModule from './components/VideoModule'
+import MusicModule from './components/MusicModule'
 import PortfolioGrid from './components/PortfolioGrid'
 import { StemWaveformStack } from './components/StemWaveform'
 import './App.css'
@@ -11,6 +13,7 @@ const PROJECT_TEMPLATE = {
   title: 'Soundworks',
   artist: 'mellodust',
   type: 'video',
+  artwork: null,
   aspectRatio: '4:3',
   videoUrl: '/assets/20260326/soundworks_20260326_video.mp4',
   thumbnailClips: [
@@ -24,7 +27,11 @@ const PROJECT_TEMPLATE = {
   ],
 }
 
-const PROJECTS = [1, 2, 3, 4, 5].map(n => ({ ...PROJECT_TEMPLATE, id: `soundworks-${n}` }))
+const PROJECTS = [1, 2, 3, 4, 5].map(n => ({
+  ...PROJECT_TEMPLATE,
+  id: `soundworks-${n}`,
+  ...(n === 1 ? { type: 'music' } : {}),
+}))
 
 const VIDEO_SRC = '/assets/20260326/soundworks_20260326_video.mp4'
 
@@ -57,7 +64,14 @@ function overlayTransition(visible) {
 function App() {
   const videoRef = useRef(null)
   const scrollerRef = useRef(null)
+  const isPreviewing = useIsPreviewing()
+  const [builderContent, setBuilderContent] = useState(null)
+
+  useEffect(() => {
+    builder.get('page', { url: '/' }).promise().then(setBuilderContent)
+  }, [])
   const [projectLoaded, setProjectLoaded] = useState(false)
+  const [loadedProject, setLoadedProject] = useState(null)
   const [onVideoSlide, setOnVideoSlide] = useState(false)
   const [mixerOpen, setMixerOpen] = useState(false)
   const [showControls, setShowControls] = useState(true)
@@ -130,9 +144,10 @@ function App() {
     scrollerRef.current?.scrollTo({ top: window.innerHeight, behavior: 'smooth' })
   }
 
-  function handleProjectLoad() {
+  function handleProjectLoad(project) {
+    setLoadedProject(project)
     setProjectLoaded(true)
-    scrollToVideo()
+    if (project.type !== 'music') scrollToVideo()
   }
 
   const effectiveShowControls = !onVideoSlide || showControls
@@ -153,13 +168,17 @@ function App() {
               projects={PROJECTS}
               videoRef={videoRef}
               onProjectLoad={handleProjectLoad}
-              showTitle={!onVideoSlide}
+              onVideoSlide={onVideoSlide}
               dragZoneBottom={dragZoneBottom}
             />
           </div>
         </section>
         <div ref={videoSlideRef}>
-          <VideoModule videoSrc={VIDEO_SRC} videoRef={videoRef} mixerOpen={mixerOpen} deckVisible={onVideoSlide && showControls} />
+          {loadedProject?.type === 'music' ? (
+            <MusicModule artwork={loadedProject.artwork} mixerOpen={mixerOpen} deckVisible={onVideoSlide && showControls} />
+          ) : (
+            <VideoModule videoSrc={VIDEO_SRC} videoRef={videoRef} mixerOpen={mixerOpen} deckVisible={onVideoSlide && showControls} />
+          )}
         </div>
       </div>
 
@@ -180,7 +199,30 @@ function App() {
         showControls={effectiveShowControls}
         projectLoaded={projectLoaded}
         onBoundsChange={setTransportTop}
+        scrollerRef={scrollerRef}
       />
+
+      <AnimatePresence>
+        {!onVideoSlide && (
+          <motion.div
+            key="footer-buttons"
+            style={styles.footerButtons}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.4, ease: 'easeOut' }}
+            onWheel={e => scrollerRef.current?.scrollBy(0, e.deltaY)}
+          >
+            {['Contact', 'Disclaimer', 'Credits', 'About'].map(label => (
+              <button key={label} style={{ ...styles.footerBtn, pointerEvents: !onVideoSlide ? 'auto' : 'none' }}>{label}</button>
+            ))}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {(builderContent || isPreviewing) && (
+        <BuilderComponent model="page" content={builderContent} />
+      )}
     </>
   )
 }
@@ -206,6 +248,29 @@ const styles = {
     left: 0,
     width: '100%',
     height: '50vh',
+  },
+  footerButtons: {
+    position: 'fixed',
+    top: 'calc(82vh + 32px)',
+    left: 0,
+    width: '100vw',
+    display: 'flex',
+    justifyContent: 'center',
+    gap: '24px',
+    zIndex: 1000,
+    pointerEvents: 'none',
+  },
+  footerBtn: {
+    background: 'none',
+    border: 'none',
+    padding: '4px 0',
+    color: 'rgba(255,255,255,0.3)',
+    fontSize: '10px',
+    fontFamily: 'system-ui, sans-serif',
+    fontWeight: 500,
+    letterSpacing: '0.08em',
+    textTransform: 'uppercase',
+    cursor: 'pointer',
   },
   waveformFloat: {
     position: 'fixed',

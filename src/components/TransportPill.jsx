@@ -149,7 +149,7 @@ function MixerIcon({ active }) {
   )
 }
 
-export default function TransportPill({ mixerOpen = false, onMixerOpenChange, showControls = true, projectLoaded = false, onBoundsChange }) {
+export default function TransportPill({ mixerOpen = false, onMixerOpenChange, showControls = true, projectLoaded = false, onBoundsChange, scrollerRef }) {
   const [isPlaying, setIsPlaying] = useState(audioEngine.isPlaying);
 
   useEffect(() => {
@@ -177,6 +177,7 @@ export default function TransportPill({ mixerOpen = false, onMixerOpenChange, sh
       style={styles.transportWrapper}
       animate={{ opacity: visible ? 1 : 0 }}
       transition={overlayTransition(visible)}
+      onWheel={e => scrollerRef?.current?.scrollBy(0, e.deltaY)}
     >
       {/* Prev / Play / Next — centered */}
       <div style={styles.transportGroup}>
@@ -238,6 +239,7 @@ const styles = {
     alignItems: 'center',
     justifyContent: 'center',
     gap: '0px',
+    pointerEvents: 'none',
   },
   btn: {
     display: 'flex',

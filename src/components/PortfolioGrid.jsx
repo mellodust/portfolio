@@ -1,6 +1,8 @@
-import { useRef, useState, useLayoutEffect, useEffect } from 'react'
+import { useRef, useState, useLayoutEffect, useEffect, useMemo } from 'react'
 import { motion, useMotionValue, useVelocity, useMotionValueEvent, animate, AnimatePresence } from 'framer-motion'
 import { audioEngine } from '../audio/audioEngine'
+
+const DEG_PER_SEC = 33 * 6  // 33 RPM = 198°/sec at 1× speed
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -79,26 +81,95 @@ function VideoThumbnail({ videoUrl, thumbnailClips }) {
 }
 
 // ---------------------------------------------------------------------------
+// CardDisc — spinning disc for the back face of a music card
+// ---------------------------------------------------------------------------
+
+function CardDisc() {
+  const discRef      = useRef(null)
+  const rotationRef  = useRef(0)
+  const lastTimeRef  = useRef(null)
+  const spinStateRef = useRef({ isPlaying: false, direction: 1, scrubVelocity: 0 })
+
+  useEffect(() => {
+    const offTick  = audioEngine.on('tick',        ({ spinState }) => { spinStateRef.current = spinState })
+    const offState = audioEngine.on('stateChange', ({ spinState }) => { spinStateRef.current = spinState })
+    return () => { offTick(); offState() }
+  }, [])
+
+  useEffect(() => {
+    let rafId
+    function tick(time) {
+      if (lastTimeRef.current !== null) {
+        const dt = (time - lastTimeRef.current) / 1000
+        const { isPlaying, direction, scrubVelocity } = spinStateRef.current
+        if (isPlaying && dt > 0 && dt < 0.1) {
+          rotationRef.current += DEG_PER_SEC * scrubVelocity * direction * dt
+        }
+      }
+      lastTimeRef.current = time
+      if (discRef.current) discRef.current.style.transform = `rotate(${rotationRef.current}deg)`
+      rafId = requestAnimationFrame(tick)
+    }
+    rafId = requestAnimationFrame(tick)
+    return () => { cancelAnimationFrame(rafId); lastTimeRef.current = null }
+  }, [])
+
+  return (
+    <div style={styles.cardDiscOuter}>
+      <div ref={discRef} style={styles.cardDisc}>
+        <div style={styles.cardDiscSpindle} />
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// TypeFilterButtons — project type filter toggles, bottom-left
+// ---------------------------------------------------------------------------
+
+function TypeFilterButtons({ filter, onToggle }) {
+  return (
+    <div style={styles.filterButtons}>
+      {[
+        { key: 'music', label: 'Catalog' },
+        { key: 'video', label: 'Audio Post' },
+      ].map(({ key, label }) => (
+        <div key={key} style={styles.filterRow}>
+          <button
+            style={{
+              ...styles.filterToggle,
+              background: filter[key] ? 'rgba(255,255,255,0.85)' : 'transparent',
+            }}
+            onClick={() => onToggle(key)}
+            aria-label={`${filter[key] ? 'Hide' : 'Show'} ${label}`}
+          />
+          <span style={styles.filterLabel}>{label}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // CarouselCard — outer moves with carousel, inner parallaxes
 // ---------------------------------------------------------------------------
 
-function CarouselCard({ slotIndex, project, rawPos, loadedIdRef, strideRef }) {
-  const outerRef = useRef(null)
-  const innerRef = useRef(null)
+function CarouselCard({ slotIndex, project, rawPos, flippedId, strideRef, cardWidthRef }) {
+  // xMv drives the Framer Motion x transform — updated imperatively, not animated.
+  // Framer Motion merges it with the animated opacity/scale without conflict.
+  const xMv     = useMotionValue(0)
+  const innerRef = useRef(null)  // parallax — video cards only
+
+  const isMusic   = project.type === 'music'
+  const isFlipped = isMusic && project.id === flippedId
 
   function apply(pos) {
-    const outer = outerRef.current
-    const inner = innerRef.current
-    if (!outer) return
     const stride = strideRef.current
     const offset = slotIndex - pos
-    const x      = offset * stride
-    const scale  = project.id === loadedIdRef.current ? 1.15 : 1.0
-    outer.style.transform = `translate(-50%, -50%) translate3d(${x}px, 0, 0) scale(${scale})`
-    if (inner) {
-      // cardPositionFromCenter = offset * stride
-      // parallaxOffset = cardPositionFromCenter * PARALLAX_SHIFT_VW  (viewportWidth cancels)
-      inner.style.transform = `translate3d(${-offset * stride * PARALLAX_SHIFT_VW}px, 0, 0)`
+    // x = offset*stride re-centers card: left:50% + x positions center at 50%+offset*stride
+    xMv.set(offset * stride - cardWidthRef.current / 2)
+    if (innerRef.current) {
+      innerRef.current.style.transform = `translate3d(${-offset * stride * PARALLAX_SHIFT_VW}px, 0, 0)`
     }
   }
 
@@ -106,62 +177,80 @@ function CarouselCard({ slotIndex, project, rawPos, loadedIdRef, strideRef }) {
   useLayoutEffect(() => { apply(rawPos.get()) })
 
   return (
-    <div
-      ref={outerRef}
+    <motion.div
       data-slot-index={slotIndex}
       style={{
         position: 'absolute',
         left: '50%',
         top: '50%',
-        // Width and height set dynamically — inline style is recalculated on resize via
-        // parent re-render (cardWidth state drives a key prop, see PortfolioGrid)
         width: 'var(--card-w)',
         height: 'var(--card-h)',
         borderRadius: 16,
-        overflow: 'hidden',
-        background: '#111',
         cursor: 'pointer',
         willChange: 'transform',
         userSelect: 'none',
         WebkitUserSelect: 'none',
         flexShrink: 0,
+        overflow: 'visible',
+        perspective: isMusic ? '800px' : undefined,
+        x: xMv,
+        y: '-50%',
       }}
+      initial={{ opacity: 0, scale: 0.95 }}
+      animate={{ opacity: 1, scale: 1 }}
+      exit={{ opacity: 0, scale: 0.95 }}
+      transition={{ type: 'spring', stiffness: 380, damping: 36 }}
     >
-      {/* Inner media layer — OVERSCAN wide, tall enough for full vertical coverage.
-          Precisely centered so ±PARALLAX_SHIFT shift never exposes a black edge.
-          Card's overflow:hidden clips the excess. */}
-      <div
-        ref={innerRef}
-        style={{
-          position: 'absolute',
-          width: 'var(--inner-w)',
-          height: 'var(--inner-h)',
-          left: 'var(--inner-left)',
-          top: 'var(--inner-top)',
-          willChange: 'transform',
-        }}
-      >
-        {project.type === 'video' ? (
-          <VideoThumbnail
-            videoUrl={project.videoUrl}
-            thumbnailClips={project.thumbnailClips}
-          />
-        ) : (
-          <div style={styles.placeholder} />
-        )}
+      {isMusic ? (
+        // 3D flip container — rotates around Y axis
+        <motion.div
+          style={styles.flipper}
+          animate={{ rotateY: isFlipped ? 180 : 0 }}
+          transition={{ type: 'spring', stiffness: 300, damping: 35, mass: 0.8 }}
+        >
+          {/* Front face — artwork */}
+          <div style={styles.face}>
+            {project.artwork
+              ? <img src={project.artwork} alt="" style={styles.faceImg} draggable={false} />
+              : <div style={styles.placeholder} />
+            }
+          </div>
+
+          {/* Back face — spinning disc, pre-rotated 180° */}
+          <div style={{ ...styles.face, transform: 'rotateY(180deg)', background: '#0a0a0a' }}>
+            <CardDisc />
+          </div>
+        </motion.div>
+      ) : (
+        // Video card — clip wrapper keeps video inside card bounds;
+        // outer overflow:visible lets the text label below show through
+        <div style={styles.videoClip}>
+          <div
+            ref={innerRef}
+            style={{
+              position: 'absolute',
+              width: 'var(--inner-w)',
+              height: 'var(--inner-h)',
+              left: 'var(--inner-left)',
+              top: 'var(--inner-top)',
+              willChange: 'transform',
+            }}
+          >
+            <VideoThumbnail
+              videoUrl={project.videoUrl}
+              thumbnailClips={project.thumbnailClips}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Title + artist — sits below the card, scrolls with it */}
+      <div style={styles.cardLabel}>
+        <span style={styles.cardTitle}>{project.title}</span>
+        <span style={styles.cardArtist}>{project.artist}</span>
       </div>
-    </div>
+    </motion.div>
   )
-}
-
-// ---------------------------------------------------------------------------
-// Title variants
-// ---------------------------------------------------------------------------
-
-const titleVariants = {
-  initial: { scale: 0.85, opacity: 0 },
-  animate: { scale: 1, opacity: 1, transition: { type: 'spring', stiffness: 400, damping: 20 } },
-  exit:    { scale: 0.85, opacity: 0, transition: { duration: 0.1 } },
 }
 
 // ---------------------------------------------------------------------------
@@ -172,27 +261,41 @@ export default function PortfolioGrid({
   projects,
   videoRef,
   onProjectLoad,
-  showTitle    = true,
+  onVideoSlide = false,
   dragSensitivity = 1.0,
   dragZoneBottom = window.innerHeight * 0.5,
 }) {
-  const L = projects.length
+  // ---------------------------------------------------------------------------
+  // Filter state
+  // ---------------------------------------------------------------------------
 
-  // Clone layout: [projects × 3]
-  //   Indices  0..L-1   → left clones   (mirrors real, enables leftward infinite scroll)
-  //   Indices  L..2L-1  → real zone     (starting position, rawPos begins here)
-  //   Indices  2L..3L-1 → right clones  (mirrors real, enables rightward infinite scroll)
-  const allCards = [...projects, ...projects, ...projects]
+  const [filter, setFilter] = useState({ music: true, video: true })
+
+  function handleToggleFilter(key) {
+    setFilter(prev => {
+      const next = { ...prev, [key]: !prev[key] }
+      // Enforce: at least one type must remain active
+      if (!next.music && !next.video) return prev
+      return next
+    })
+  }
+
+  const filteredProjects = useMemo(
+    () => projects.filter(p => filter[p.type] !== false),
+    [projects, filter]
+  )
+
+  const L = filteredProjects.length
+
+  // Clone layout: [filteredProjects × 3]
+  const allCards = [...filteredProjects, ...filteredProjects, ...filteredProjects]
 
   const containerRef = useRef(null)
 
   const [cardWidth, setCardWidth] = useState(computeCardWidth)
   const [loadedId, setLoadedId]   = useState(null)
+  const [flippedId, setFlippedId] = useState(null)
   const [centerIdx, setCenterIdx] = useState(0)
-
-  // Refs so apply() always reads the latest values without stale closures
-  const loadedIdRef      = useRef(loadedId)
-  loadedIdRef.current    = loadedId
 
   const gap        = Math.round(cardWidth * 0.08)
   const stride     = cardWidth + gap
@@ -200,14 +303,10 @@ export default function PortfolioGrid({
   const cardHeight  = Math.round(cardWidth / aspectRatio)
 
   // OVERSCAN: inner must be wide enough so the maximum parallax shift never exposes a black edge.
-  // Max shift in pixels = PARALLAX_SHIFT_VW * viewportWidth (constant regardless of card ratio).
-  // Expressed relative to cardWidth to get the required fractional overscan per side.
   const maxParallaxPx = PARALLAX_SHIFT_VW * window.innerWidth
   const OVERSCAN      = 1 + 2 * maxParallaxPx / cardWidth
 
-  // Inner media dimensions — fully derived from OVERSCAN so no black edges at any card ratio.
-  // Height uses the larger of a 5% vertical buffer and the inner width scaled by the source
-  // video's h/w ratio, ensuring full coverage regardless of source aspect ratio.
+  // Inner media dimensions
   const srcAspect      = projects[0]?.aspectRatio || '4:3'
   const [sw, sh]       = srcAspect.split(':').map(Number)
   const videoHWRatio   = sh / sw
@@ -219,11 +318,26 @@ export default function PortfolioGrid({
   const strideRef   = useRef(stride)
   strideRef.current = stride
 
-  // rawPos in index-space. 0 = slot 0 at center. Starts at L (first real project).
+  const cardWidthRef   = useRef(cardWidth)
+  cardWidthRef.current = cardWidth
+
+  // rawPos in index-space. Starts at L (first real project).
   const rawPos   = useMotionValue(L)
   const velMv    = useVelocity(rawPos)
   const animCtrl = useRef(null)
   const isWrapping = useRef(false)
+
+  // ---------------------------------------------------------------------------
+  // Reset carousel position when filter changes (L changes)
+  // ---------------------------------------------------------------------------
+
+  const prevLRef = useRef(L)
+  useEffect(() => {
+    if (L === prevLRef.current) return
+    prevLRef.current = L
+    animCtrl.current?.stop()
+    rawPos.set(L)
+  }, [L, rawPos])
 
   // ---------------------------------------------------------------------------
   // Position tracking — wrapping + centerIdx update
@@ -234,7 +348,6 @@ export default function PortfolioGrid({
 
     if (!isWrapping.current) {
       if (pos < L) {
-        // Entered left clone zone — silently jump to equivalent real position
         isWrapping.current = true
         const vel = velMv.get()
         animCtrl.current?.stop()
@@ -247,7 +360,6 @@ export default function PortfolioGrid({
         }
         Promise.resolve().then(() => { isWrapping.current = false })
       } else if (pos >= 2 * L) {
-        // Entered right clone zone — silently jump to equivalent real position
         isWrapping.current = true
         const vel = velMv.get()
         animCtrl.current?.stop()
@@ -262,7 +374,6 @@ export default function PortfolioGrid({
       }
     }
 
-    // Always update centered project (clamp to real zone for index computation)
     const nearestSlot = Math.max(L, Math.min(2 * L - 1, Math.round(p)))
     const projIdx     = nearestSlot - L
     setCenterIdx(prev => prev !== projIdx ? projIdx : prev)
@@ -332,7 +443,6 @@ export default function PortfolioGrid({
     dragStart.current = null
     if (!didDrag.current) return
 
-    // Velocity-based inertia, no snapping, no min/max — free spin
     const vel = velMv.get()
     animCtrl.current = animate(rawPos, rawPos.get(), {
       type: 'inertia',
@@ -346,7 +456,6 @@ export default function PortfolioGrid({
     dragStart.current = null
   }
 
-  // Tap detection via event delegation — reads data-slot-index
   function onClick(e) {
     if (didDrag.current) return
     const cardEl = e.target.closest('[data-slot-index]')
@@ -361,21 +470,32 @@ export default function PortfolioGrid({
   async function handleTap(slotIndex) {
     if (isLoading.current) return
     const projIdx = slotIndex % L                    // 0..L-1
-    const target  = projIdx + L                      // snap to real zone equivalent
-    const project = projects[projIdx]
+    const project = filteredProjects[projIdx]
     if (!project) return
 
-    animCtrl.current?.stop()
-    animCtrl.current = animate(rawPos, target, {
-      type: 'spring', stiffness: 300, damping: 35, mass: 0.8,
-    })
+    if (project.type === 'music') {
+      // Flip the card in place — no snap, no scroll
+      setFlippedId(project.id)
+    } else {
+      // Video: unflip any previously selected music card, snap to center
+      setFlippedId(null)
+      const target = projIdx + L
+      animCtrl.current?.stop()
+      animCtrl.current = animate(rawPos, target, {
+        type: 'spring', stiffness: 300, damping: 35, mass: 0.8,
+      })
+    }
 
     isLoading.current = true
-    onProjectLoad?.()
+    onProjectLoad?.(project)
     try {
       audioEngine.pause()
       await Promise.all(project.stems.map(s => audioEngine.loadStem(s.id, s.url)))
-      if (videoRef?.current) audioEngine.setMode('video', videoRef.current)
+      if (project.type === 'video' && videoRef?.current) {
+        audioEngine.setMode('video', videoRef.current)
+      } else {
+        audioEngine.setMode('audio')
+      }
       setLoadedId(project.id)
       audioEngine.play()
     } catch (err) {
@@ -385,9 +505,9 @@ export default function PortfolioGrid({
     }
   }
 
-  const activeProject = projects[centerIdx]
+  const activeProject = filteredProjects[centerIdx]
 
-  // CSS custom properties drive all dimensions — avoids prop-drilling into each card's style
+  // CSS custom properties drive all dimensions
   const cssVars = {
     '--card-w':    `${cardWidth}px`,
     '--card-h':    `${cardHeight}px`,
@@ -408,34 +528,36 @@ export default function PortfolioGrid({
         onPointerCancel={onPointerCancel}
         onClick={onClick}
       >
-        {allCards.map((project, slotIndex) => (
-          <CarouselCard
-            key={slotIndex}
-            slotIndex={slotIndex}
-            project={project}
-            rawPos={rawPos}
-            loadedIdRef={loadedIdRef}
-            strideRef={strideRef}
-          />
-        ))}
+        <AnimatePresence>
+          {allCards.map((project, slotIndex) => (
+            <CarouselCard
+              key={`${project.id}-${Math.floor(slotIndex / L)}`}
+              slotIndex={slotIndex}
+              project={project}
+              rawPos={rawPos}
+              flippedId={flippedId}
+              strideRef={strideRef}
+              cardWidthRef={cardWidthRef}
+            />
+          ))}
+        </AnimatePresence>
       </div>
 
-      {showTitle && (
-        <div style={styles.titleDisplay}>
-          <AnimatePresence mode="wait" initial={false}>
-            <motion.span
-              key={activeProject?.id}
-              style={styles.titleText}
-              variants={titleVariants}
-              initial="initial"
-              animate="animate"
-              exit="exit"
-            >
-              {activeProject?.title}
-            </motion.span>
-          </AnimatePresence>
-        </div>
-      )}
+      <AnimatePresence>
+        {!onVideoSlide && (
+          <motion.div
+            key="filter-buttons"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.4, ease: 'easeOut' }}
+            style={{ pointerEvents: 'none' }}
+          >
+            <TypeFilterButtons filter={filter} onToggle={handleToggleFilter} />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
     </>
   )
 }
@@ -445,6 +567,54 @@ export default function PortfolioGrid({
 // ---------------------------------------------------------------------------
 
 const styles = {
+  flipper: {
+    width: '100%',
+    height: '100%',
+    transformStyle: 'preserve-3d',
+    position: 'relative',
+    borderRadius: 16,
+  },
+  face: {
+    position: 'absolute',
+    inset: 0,
+    borderRadius: 16,
+    overflow: 'hidden',
+    background: '#111',
+    backfaceVisibility: 'hidden',
+    WebkitBackfaceVisibility: 'hidden',
+  },
+  faceImg: {
+    width: '100%',
+    height: '100%',
+    objectFit: 'cover',
+    display: 'block',
+    pointerEvents: 'none',
+  },
+  cardDiscOuter: {
+    width: '100%',
+    height: '100%',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cardDisc: {
+    width: '88%',
+    height: '88%',
+    borderRadius: '50%',
+    background: 'radial-gradient(circle at center, #2a2a2a 0%, #111 70%)',
+    willChange: 'transform',
+    position: 'relative',
+  },
+  cardDiscSpindle: {
+    position: 'absolute',
+    top: '50%',
+    left: '50%',
+    transform: 'translate(-50%, -50%)',
+    width: '6%',
+    height: '6%',
+    borderRadius: '50%',
+    background: '#0a0a0a',
+  },
   container: {
     position: 'absolute',
     inset: 0,
@@ -467,20 +637,90 @@ const styles = {
     height: '100%',
     background: '#1a1a1a',
   },
-  titleDisplay: {
-    position: 'fixed',
-    bottom: 'calc(96px + env(safe-area-inset-bottom))',
-    left: 'calc(24px + env(safe-area-inset-left))',
-    pointerEvents: 'none',
-    zIndex: 999,
+  // Clips overscanned video inside card bounds while outer card stays overflow:visible
+  videoClip: {
+    position: 'absolute',
+    inset: 0,
+    borderRadius: 16,
+    overflow: 'hidden',
+    background: '#111',
   },
-  titleText: {
+  cardLabel: {
+    position: 'absolute',
+    top: 'calc(100% + 12px)',
+    left: 0,
+    right: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: '3px',
+    pointerEvents: 'none',
+    userSelect: 'none',
+  },
+  cardTitle: {
     display: 'block',
-    color: 'rgba(255,255,255,0.75)',
-    fontSize: '13px',
+    color: 'rgba(255,255,255,0.9)',
+    fontSize: '10px',
     fontFamily: 'system-ui, sans-serif',
     fontWeight: 500,
     letterSpacing: '0.08em',
     textTransform: 'uppercase',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    maxWidth: '100%',
+  },
+  cardArtist: {
+    display: 'block',
+    color: 'rgba(255,255,255,0.4)',
+    fontSize: '10px',
+    fontFamily: 'system-ui, sans-serif',
+    fontWeight: 500,
+    letterSpacing: '0.08em',
+    textTransform: 'uppercase',
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    maxWidth: '100%',
+  },
+  // Filter toggles — mirror of StemWaveform's metaOverlay/muteToggle/label styles.
+  // bottom: calc(30vh - 20px) positions the container so Audio Post row (bottom, 64px)
+  // centres at calc(30vh + 12px), matching the mx (Music) stem toggle row on the right.
+  filterButtons: {
+    position: 'fixed',
+    left: '6vw',
+    bottom: 'calc(30vh - 20px)',
+    display: 'flex',
+    flexDirection: 'column',
+    zIndex: 1000,
+    pointerEvents: 'none',
+  },
+  filterRow: {
+    height: '64px',   // matches CANVAS_H — same centre-to-centre spacing as stem rows
+    display: 'flex',
+    alignItems: 'center',
+    gap: '10px',
+    pointerEvents: 'none',
+  },
+  filterLabel: {
+    fontSize: '10px',
+    fontFamily: 'system-ui, sans-serif',
+    fontWeight: 500,
+    letterSpacing: '0.1em',
+    textTransform: 'uppercase',
+    color: 'rgba(255,255,255,0.35)',
+    userSelect: 'none',
+    whiteSpace: 'nowrap',
+  },
+  filterToggle: {
+    width: '16px',
+    height: '16px',
+    borderRadius: '50%',
+    border: '1.5px solid rgba(255,255,255,0.45)',
+    cursor: 'pointer',
+    padding: 0,
+    flexShrink: 0,
+    transition: 'background 0.15s ease',
+    pointerEvents: 'auto',
   },
 }

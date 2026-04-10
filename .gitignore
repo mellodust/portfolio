@@ -24,3 +24,4 @@ dist-ssr
 *.sw?
 src/assets/20260326/*.mp4
 public/assets/
+.env

@@ -266,14 +266,17 @@ export function StemWaveformStack({ stems, mixerOpen, showControls = true, showC
     return () => { ro.disconnect(); window.removeEventListener('resize', measure) }
   }, [onBoundsChange])
 
-  const containerStyle = showContainer ? {
-    background: containerMode === 'light' ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.4)',
-    backdropFilter: `blur(${containerBlur}px)`,
-    WebkitBackdropFilter: `blur(${containerBlur}px)`,
-    border: containerMode === 'light' ? '1px solid rgba(255,255,255,0.2)' : '1px solid rgba(255,255,255,0.1)',
-    borderRadius: 16,
-    padding: '12px 0',
-  } : {}
+  const containerStyle = {
+    pointerEvents: 'none',
+    ...(showContainer ? {
+      background: containerMode === 'light' ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.4)',
+      backdropFilter: `blur(${containerBlur}px)`,
+      WebkitBackdropFilter: `blur(${containerBlur}px)`,
+      border: containerMode === 'light' ? '1px solid rgba(255,255,255,0.2)' : '1px solid rgba(255,255,255,0.1)',
+      borderRadius: 16,
+      padding: '12px 0',
+    } : {}),
+  }
 
   return (
     <>
@@ -365,11 +368,13 @@ const styles = {
     display: 'flex',
     flexDirection: 'column',
     width: '100%',
+    pointerEvents: 'none',
   },
   rowsContainer: {
     position: 'relative',
     display: 'flex',
     flexDirection: 'column-reverse', // stem[0] anchors at bottom; new rows grow upward
+    pointerEvents: 'none',
   },
   row: {
     position: 'relative',
@@ -377,6 +382,7 @@ const styles = {
     alignItems: 'center',
     height: `${CANVAS_H}px`,
     boxSizing: 'border-box',
+    pointerEvents: 'none',
   },
   canvasWrapper: {
     // Fixed 55vw centered in the full-width row — identical in both collapsed and expanded modes.
@@ -437,11 +443,13 @@ const styles = {
     display: 'flex',
     justifyContent: 'center',
     paddingTop: '20px', // 12px playhead extension + 8px breathing room
+    pointerEvents: 'none',
   },
   timeText: {
     fontSize: '11px',
     fontFamily: 'ui-monospace, "SF Mono", monospace',
     color: 'rgba(255,255,255,0.45)',
     fontVariantNumeric: 'tabular-nums',
+    pointerEvents: 'none',
   },
 }
